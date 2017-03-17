@@ -12,18 +12,35 @@ import (
 	"os"
 	"strings"
 
-	pb "./store"
+	pb "../store"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 
 	// "github.com/grpc-ecosystem/grpc-opentracing/go/otgrpc"
-	"../../../go/otgrpc"
+	"../../../../go/otgrpc"
 	"github.com/lightstep/lightstep-tracer-go"
 	"github.com/opentracing/opentracing-go"
 )
 
 const (
 	address = "localhost:50051"
+	help    = `Enter commands to interact with the store service:
+
+    stock_item     Stock a single item.
+    stock_items    Stock one or more items.
+    sell_item      Sell a single item.
+    sell_items     Sell one or more items.
+    inventory      List the store's inventory.
+    query_item     Query the inventory for a single item.
+    query_items    Query the inventory for one or more items.
+
+Example:
+    > stock_item apple
+    > stock_items apple milk
+    > inventory
+    apple   2
+    milk    1
+`
 )
 
 var accessToken = flag.String("access_token", "", "your LightStep access token")
@@ -193,6 +210,7 @@ func ExecuteCommand(c pb.StoreClient, cmd string, args []string) error {
 
 func ReadAndExecute(c pb.StoreClient) {
 	reader := bufio.NewReader(os.Stdin)
+	fmt.Print(help)
 	for {
 		fmt.Print("> ")
 		text, err := reader.ReadString('\n')
@@ -223,6 +241,7 @@ func main() {
 	// Set up the LightStep tracer
 	tracerOpts := lightstep.Options{
 		AccessToken: *accessToken,
+		UseGRPC:     true,
 	}
 	tracerOpts.Tags = make(opentracing.Tags)
 	tracerOpts.Tags[lightstep.ComponentNameKey] = "go.store-client"

@@ -12,13 +12,13 @@ import (
 	"net"
 	"os"
 
-	pb "./store"
+	pb "../store"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
 	// "github.com/grpc-ecosystem/grpc-opentracing/go/otgrpc"
-	"../../../go/otgrpc"
+	"../../../../go/otgrpc"
 	"github.com/lightstep/lightstep-tracer-go"
 	"github.com/opentracing/opentracing-go"
 )
@@ -131,6 +131,7 @@ func main() {
 
 	tracerOpts := lightstep.Options{
 		AccessToken: *accessToken,
+		UseGRPC:     true,
 	}
 	tracerOpts.Tags = make(opentracing.Tags)
 	tracerOpts.Tags[lightstep.ComponentNameKey] = "go.store-server"
