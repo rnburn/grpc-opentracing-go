@@ -73,6 +73,20 @@ func OpenTracingClientInterceptor(tracer opentracing.Tracer, optFuncs ...Option)
 	}
 }
 
+// OpenTracingStreamClientInterceptor returns a grpc.StreamClientInterceptor suitable
+// for use in a grpc.Dial call.
+//
+// For example:
+//
+//     conn, err := grpc.Dial(
+//         address,
+//         ...,  // (existing DialOptions)
+//         grpc.WithStreamInterceptor(otgrpc.OpenTracingStreamClientInterceptor(tracer)))
+//
+// All gRPC client spans will inject the OpenTracing SpanContext into the gRPC
+// metadata; they will also look in the context.Context for an active
+// in-process parent Span and establish a ChildOf reference if such a parent
+// Span could be found.
 func OpenTracingStreamClientInterceptor(tracer opentracing.Tracer, optFuncs ...Option) grpc.StreamClientInterceptor {
 	otgrpcOpts := newOptions()
 	otgrpcOpts.apply(optFuncs...)
@@ -96,14 +110,14 @@ func OpenTracingStreamClientInterceptor(tracer opentracing.Tracer, optFuncs ...O
 			gRPCComponentTag,
 		)
 		ctx = injectSpanContext(ctx, tracer, clientSpan)
-		stream, err := streamer(ctx, desc, cc, method, opts...)
+		cs, err := streamer(ctx, desc, cc, method, opts...)
 		if err != nil {
 			clientSpan.LogFields(log.String("event", "gRPC error"), log.Error(err))
 			ext.Error.Set(clientSpan, true)
 			clientSpan.Finish()
-			return stream, err
+			return cs, err
 		}
-		return newOpenTracingClientStream(stream, desc, tracer, clientSpan), nil
+		return newOpenTracingClientStream(cs, desc, tracer, clientSpan), nil
 	}
 }
 
@@ -124,7 +138,6 @@ func newOpenTracingClientStream(cs grpc.ClientStream, desc *grpc.StreamDesc, tra
 		ClientStream:  cs,
 		finishChan:    finishChan,
 		serverStreams: desc.ServerStreams,
-		clientStreams: desc.ClientStreams,
 		lock:          lock,
 		clientSpan:    clientSpan,
 	}
@@ -135,7 +148,6 @@ type openTracingClientStream struct {
 	grpc.ClientStream
 	finishChan    chan struct{}
 	serverStreams bool
-	clientStreams bool
 	lock          *sync.Mutex
 	clientSpan    opentracing.Span
 }
