@@ -140,6 +140,14 @@ type openTracingClientStream struct {
 	clientSpan    opentracing.Span
 }
 
+func (cs *openTracingClientStream) Header() (metadata.MD, error) {
+	md, err := cs.ClientStream.Header()
+	if err != nil {
+		finishStreamSpan(cs.lock, cs.finishChan, cs.clientSpan, err)
+	}
+	return md, err
+}
+
 func (cs *openTracingClientStream) SendMsg(m interface{}) error {
 	err := cs.ClientStream.SendMsg(m)
 	if err != nil {
@@ -187,11 +195,10 @@ func finishStreamSpan(lock *sync.Mutex, finishChan chan struct{}, clientSpan ope
 	defer lock.Unlock()
 	select {
 	case <-finishChan:
-		// The client span is either already closed or being closed, so we have
-		// nothing to do in this function.
+		// The client span is either already finished or being finished, so we have
+		// nothing to do.
 		return
 	default:
-		break
 	}
 	close(finishChan)
 	if err != nil {
