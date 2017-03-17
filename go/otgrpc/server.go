@@ -33,11 +33,7 @@ func OpenTracingServerInterceptor(tracer opentracing.Tracer, optFuncs ...Option)
 		info *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler,
 	) (resp interface{}, err error) {
-		md, ok := metadata.FromContext(ctx)
-		if !ok {
-			md = metadata.New(nil)
-		}
-		spanContext, err := tracer.Extract(opentracing.HTTPHeaders, metadataReaderWriter{md})
+		spanContext, err := extractSpanContext(ctx, tracer)
 		if err != nil && err != opentracing.ErrSpanContextNotFound {
 			// TODO: establish some sort of error reporting mechanism here. We
 			// don't know where to put such an error and must rely on Tracer
@@ -72,4 +68,45 @@ func OpenTracingServerInterceptor(tracer opentracing.Tracer, optFuncs ...Option)
 		}
 		return resp, err
 	}
+}
+
+func OpenTracingStreamServerInterceptor(tracer opentracing.Tracer, optFuncs ...Option) grpc.StreamServerInterceptor {
+	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		spanContext, err := extractSpanContext(ss.Context(), tracer)
+		if err != nil && err != opentracing.ErrSpanContextNotFound {
+			// TODO: establish some sort of error reporting mechanism here. We
+			// don't know where to put such an error and must rely on Tracer
+			// implementations to do something appropriate for the time being.
+		}
+		serverSpan := tracer.StartSpan(
+			info.FullMethod,
+			ext.RPCServerOption(spanContext),
+			gRPCComponentTag,
+		)
+		defer serverSpan.Finish()
+		ss = &openTracingServerStream{ss, opentracing.ContextWithSpan(ss.Context(), serverSpan)}
+		err = handler(srv, ss)
+		if err != nil {
+			ext.Error.Set(serverSpan, true)
+			serverSpan.LogFields(log.String("event", "gRPC error"), log.Error(err))
+		}
+		return err
+	}
+}
+
+type openTracingServerStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (stream *openTracingServerStream) Context() context.Context {
+	return stream.ctx
+}
+
+func extractSpanContext(ctx context.Context, tracer opentracing.Tracer) (opentracing.SpanContext, error) {
+	md, ok := metadata.FromContext(ctx)
+	if !ok {
+		md = metadata.New(nil)
+	}
+	return tracer.Extract(opentracing.HTTPHeaders, metadataReaderWriter{md})
 }
