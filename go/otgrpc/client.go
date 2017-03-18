@@ -102,6 +102,11 @@ func OpenTracingStreamClientInterceptor(tracer opentracing.Tracer, optFuncs ...O
 		if parent := opentracing.SpanFromContext(ctx); parent != nil {
 			parentCtx = parent.Context()
 		}
+		if otgrpcOpts.inclusionFunc != nil &&
+			!otgrpcOpts.inclusionFunc(parentCtx, method, nil, nil) {
+			return streamer(ctx, desc, cc, method, opts...)
+		}
+
 		clientSpan := tracer.StartSpan(
 			method,
 			opentracing.ChildOf(parentCtx),

@@ -96,6 +96,11 @@ func OpenTracingStreamServerInterceptor(tracer opentracing.Tracer, optFuncs ...O
 			// don't know where to put such an error and must rely on Tracer
 			// implementations to do something appropriate for the time being.
 		}
+		if otgrpcOpts.inclusionFunc != nil &&
+			!otgrpcOpts.inclusionFunc(spanContext, info.FullMethod, nil, nil) {
+			return handler(srv, ss)
+		}
+
 		serverSpan := tracer.StartSpan(
 			info.FullMethod,
 			ext.RPCServerOption(spanContext),
