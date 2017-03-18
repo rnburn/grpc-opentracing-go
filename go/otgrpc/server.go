@@ -1,13 +1,13 @@
 package otgrpc
 
 import (
-	"sync"
 	"github.com/opentracing/opentracing-go"
 	"github.com/opentracing/opentracing-go/ext"
 	"github.com/opentracing/opentracing-go/log"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
+	"sync"
 )
 
 // OpenTracingServerInterceptor returns a grpc.UnaryServerInterceptor suitable
@@ -124,8 +124,10 @@ func OpenTracingStreamServerInterceptor(tracer opentracing.Tracer, optFuncs ...O
 		}
 		err = handler(srv, ss)
 		if err != nil {
+			lock.Lock()
 			ext.Error.Set(serverSpan, true)
 			serverSpan.LogFields(log.String("event", "gRPC error"), log.Error(err))
+			lock.Unlock()
 		}
 		return err
 	}
