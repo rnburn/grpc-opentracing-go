@@ -1,6 +1,7 @@
 package otgrpc
 
 import (
+	"sync"
 	"github.com/opentracing/opentracing-go"
 	"github.com/opentracing/opentracing-go/ext"
 	"github.com/opentracing/opentracing-go/log"
@@ -86,6 +87,8 @@ func OpenTracingServerInterceptor(tracer opentracing.Tracer, optFuncs ...Option)
 // Root or not, the server Span will be embedded in the context.Context for the
 // application-specific gRPC handler(s) to access.
 func OpenTracingStreamServerInterceptor(tracer opentracing.Tracer, optFuncs ...Option) grpc.StreamServerInterceptor {
+	otgrpcOpts := newOptions()
+	otgrpcOpts.apply(optFuncs...)
 	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 		spanContext, err := extractSpanContext(ss.Context(), tracer)
 		if err != nil && err != opentracing.ErrSpanContextNotFound {
@@ -98,8 +101,22 @@ func OpenTracingStreamServerInterceptor(tracer opentracing.Tracer, optFuncs ...O
 			ext.RPCServerOption(spanContext),
 			gRPCComponentTag,
 		)
-		defer serverSpan.Finish()
-		ss = &openTracingServerStream{ss, opentracing.ContextWithSpan(ss.Context(), serverSpan)}
+		spanFinished := false
+		lock := new(sync.Mutex)
+		defer func() {
+			lock.Lock()
+			defer lock.Unlock()
+			spanFinished = true
+			serverSpan.Finish()
+		}()
+		ss = &openTracingServerStream{
+			ServerStream: ss,
+			ctx:          opentracing.ContextWithSpan(ss.Context(), serverSpan),
+			logPayloads:  otgrpcOpts.logPayloads,
+			lock:         lock,
+			serverSpan:   serverSpan,
+			spanFinished: &spanFinished,
+		}
 		err = handler(srv, ss)
 		if err != nil {
 			ext.Error.Set(serverSpan, true)
@@ -111,11 +128,39 @@ func OpenTracingStreamServerInterceptor(tracer opentracing.Tracer, optFuncs ...O
 
 type openTracingServerStream struct {
 	grpc.ServerStream
-	ctx context.Context
+	ctx          context.Context
+	logPayloads  bool
+	lock         *sync.Mutex
+	serverSpan   opentracing.Span
+	spanFinished *bool
 }
 
 func (ss *openTracingServerStream) Context() context.Context {
 	return ss.ctx
+}
+
+func (ss *openTracingServerStream) SendMsg(m interface{}) error {
+	if ss.logPayloads {
+		ss.logMsg("gRPC response", m)
+	}
+	return ss.ServerStream.SendMsg(m)
+}
+
+func (ss *openTracingServerStream) RecvMsg(m interface{}) error {
+	err := ss.ServerStream.RecvMsg(m)
+	if ss.logPayloads && err == nil {
+		ss.logMsg("gRPC request", m)
+	}
+	return err
+}
+
+func (ss *openTracingServerStream) logMsg(name string, m interface{}) {
+	ss.lock.Lock()
+	defer ss.lock.Unlock()
+	if *ss.spanFinished {
+		return
+	}
+	ss.serverSpan.LogFields(log.Object(name, m))
 }
 
 func extractSpanContext(ctx context.Context, tracer opentracing.Tracer) (opentracing.SpanContext, error) {

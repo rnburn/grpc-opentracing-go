@@ -1,7 +1,6 @@
 package otgrpc
 
 import (
-	// "fmt"
 	"github.com/opentracing/opentracing-go"
 	"github.com/opentracing/opentracing-go/ext"
 	"github.com/opentracing/opentracing-go/log"
@@ -117,12 +116,12 @@ func OpenTracingStreamClientInterceptor(tracer opentracing.Tracer, optFuncs ...O
 			clientSpan.Finish()
 			return cs, err
 		}
-		return newOpenTracingClientStream(cs, desc, tracer, clientSpan), nil
+		return newOpenTracingClientStream(cs, desc, tracer, clientSpan, otgrpcOpts.logPayloads), nil
 	}
 }
 
 func newOpenTracingClientStream(cs grpc.ClientStream, desc *grpc.StreamDesc, tracer opentracing.Tracer,
-	clientSpan opentracing.Span) grpc.ClientStream {
+	clientSpan opentracing.Span, logPayloads bool) grpc.ClientStream {
 	finishChan := make(chan struct{})
 	lock := new(sync.Mutex)
 	go func() {
@@ -138,6 +137,7 @@ func newOpenTracingClientStream(cs grpc.ClientStream, desc *grpc.StreamDesc, tra
 		ClientStream:  cs,
 		finishChan:    finishChan,
 		serverStreams: desc.ServerStreams,
+		logPayloads:   logPayloads,
 		lock:          lock,
 		clientSpan:    clientSpan,
 	}
@@ -148,6 +148,7 @@ type openTracingClientStream struct {
 	grpc.ClientStream
 	finishChan    chan struct{}
 	serverStreams bool
+	logPayloads   bool
 	lock          *sync.Mutex
 	clientSpan    opentracing.Span
 }
@@ -161,6 +162,9 @@ func (cs *openTracingClientStream) Header() (metadata.MD, error) {
 }
 
 func (cs *openTracingClientStream) SendMsg(m interface{}) error {
+	if cs.logPayloads {
+		cs.logMsg("gRPC request", m)
+	}
 	err := cs.ClientStream.SendMsg(m)
 	if err != nil {
 		finishStreamSpan(cs.lock, cs.finishChan, cs.clientSpan, err)
@@ -170,10 +174,18 @@ func (cs *openTracingClientStream) SendMsg(m interface{}) error {
 
 func (cs *openTracingClientStream) RecvMsg(m interface{}) error {
 	err := cs.ClientStream.RecvMsg(m)
-	if err == io.EOF || !cs.serverStreams && err == nil {
+	if err == io.EOF {
 		finishStreamSpan(cs.lock, cs.finishChan, cs.clientSpan, nil)
+		return err
 	} else if err != nil {
 		finishStreamSpan(cs.lock, cs.finishChan, cs.clientSpan, err)
+		return err
+	}
+	if cs.logPayloads {
+		cs.logMsg("gRPC response", m)
+	}
+	if !cs.serverStreams {
+		finishStreamSpan(cs.lock, cs.finishChan, cs.clientSpan, nil)
 	}
 	return err
 }
@@ -184,6 +196,18 @@ func (cs *openTracingClientStream) CloseSend() error {
 		finishStreamSpan(cs.lock, cs.finishChan, cs.clientSpan, err)
 	}
 	return err
+}
+
+func (cs *openTracingClientStream) logMsg(name string, m interface{}) {
+	cs.lock.Lock()
+	defer cs.lock.Unlock()
+	select {
+	case <-cs.finishChan:
+		// The client span is closed or being closed, so we can't log anything.
+		return
+	default:
+	}
+	cs.clientSpan.LogFields(log.Object(name, m))
 }
 
 func injectSpanContext(ctx context.Context, tracer opentracing.Tracer, clientSpan opentracing.Span) context.Context {

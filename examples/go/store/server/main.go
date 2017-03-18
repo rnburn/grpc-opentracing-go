@@ -143,9 +143,9 @@ func main() {
 		log.Fatalf("failed to listen: %v", err)
 	}
 	s := grpc.NewServer(grpc.UnaryInterceptor(
-		otgrpc.OpenTracingServerInterceptor(tracer)),
+		otgrpc.OpenTracingServerInterceptor(tracer, otgrpc.LogPayloads())),
 		grpc.StreamInterceptor(
-			otgrpc.OpenTracingStreamServerInterceptor(tracer)))
+			otgrpc.OpenTracingStreamServerInterceptor(tracer, otgrpc.LogPayloads())))
 	pb.RegisterStoreServer(s, &storeServer{make(map[string]int)})
 	// Register reflection service on gRPC server.
 	reflection.Register(s)
