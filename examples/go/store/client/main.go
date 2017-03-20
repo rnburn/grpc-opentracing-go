@@ -20,6 +20,7 @@ import (
 	"../../../../go/otgrpc"
 	"github.com/lightstep/lightstep-tracer-go"
 	"github.com/opentracing/opentracing-go"
+	otlog "github.com/opentracing/opentracing-go/log"
 )
 
 const (
@@ -247,14 +248,26 @@ func main() {
 	tracerOpts.Tags[lightstep.ComponentNameKey] = "go.store-client"
 	tracer := lightstep.NewTracer(tracerOpts)
 
+	// Set up a span decorator
+	decorator := func(
+		span opentracing.Span,
+		method string,
+		req, resp interface{},
+		err error) {
+		span.LogFields(
+			otlog.String("event", "decoration"),
+			otlog.String("method", method),
+			otlog.Error(err))
+	}
+
 	// Set up a connection to the server.
 	conn, err := grpc.Dial(
 		address,
 		grpc.WithInsecure(),
 		grpc.WithUnaryInterceptor(
-			otgrpc.OpenTracingClientInterceptor(tracer, otgrpc.LogPayloads())),
+			otgrpc.OpenTracingClientInterceptor(tracer, otgrpc.LogPayloads(), otgrpc.SpanDecorator(decorator))),
 		grpc.WithStreamInterceptor(
-			otgrpc.OpenTracingStreamClientInterceptor(tracer, otgrpc.LogPayloads())))
+			otgrpc.OpenTracingStreamClientInterceptor(tracer, otgrpc.LogPayloads(), otgrpc.SpanDecorator(decorator))))
 	if err != nil {
 		log.Fatalf("did not connect: %v", err)
 	}

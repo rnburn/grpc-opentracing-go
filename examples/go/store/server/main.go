@@ -21,6 +21,7 @@ import (
 	"../../../../go/otgrpc"
 	"github.com/lightstep/lightstep-tracer-go"
 	"github.com/opentracing/opentracing-go"
+	otlog "github.com/opentracing/opentracing-go/log"
 )
 
 const (
@@ -137,15 +138,27 @@ func main() {
 	tracerOpts.Tags[lightstep.ComponentNameKey] = "go.store-server"
 	tracer := lightstep.NewTracer(tracerOpts)
 
+	// Set up a span decorator
+	decorator := func(
+		span opentracing.Span,
+		method string,
+		req, resp interface{},
+		err error) {
+		span.LogFields(
+			otlog.String("event", "decoration"),
+			otlog.String("method", method),
+			otlog.Error(err))
+	}
+
 	// Set up a connection to the server.
 	lis, err := net.Listen("tcp", port)
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
 	}
 	s := grpc.NewServer(grpc.UnaryInterceptor(
-		otgrpc.OpenTracingServerInterceptor(tracer, otgrpc.LogPayloads())),
+		otgrpc.OpenTracingServerInterceptor(tracer, otgrpc.LogPayloads(), otgrpc.SpanDecorator(decorator))),
 		grpc.StreamInterceptor(
-			otgrpc.OpenTracingStreamServerInterceptor(tracer, otgrpc.LogPayloads())))
+			otgrpc.OpenTracingStreamServerInterceptor(tracer, otgrpc.LogPayloads(), otgrpc.SpanDecorator(decorator))))
 	pb.RegisterStoreServer(s, &storeServer{make(map[string]int)})
 	// Register reflection service on gRPC server.
 	reflection.Register(s)

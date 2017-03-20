@@ -108,12 +108,6 @@ func OpenTracingStreamServerInterceptor(tracer opentracing.Tracer, optFuncs ...O
 		)
 		spanFinished := false
 		lock := new(sync.Mutex)
-		defer func() {
-			lock.Lock()
-			defer lock.Unlock()
-			spanFinished = true
-			serverSpan.Finish()
-		}()
 		ss = &openTracingServerStream{
 			ServerStream: ss,
 			ctx:          opentracing.ContextWithSpan(ss.Context(), serverSpan),
@@ -123,11 +117,18 @@ func OpenTracingStreamServerInterceptor(tracer opentracing.Tracer, optFuncs ...O
 			spanFinished: &spanFinished,
 		}
 		err = handler(srv, ss)
+    lock.Lock()
+    defer lock.Unlock()
+    defer func() {
+      spanFinished = true
+      serverSpan.Finish()
+    }()
 		if err != nil {
-			lock.Lock()
 			ext.Error.Set(serverSpan, true)
 			serverSpan.LogFields(log.String("event", "gRPC error"), log.Error(err))
-			lock.Unlock()
+		}
+		if otgrpcOpts.decorator != nil {
+			otgrpcOpts.decorator(serverSpan, info.FullMethod, nil, nil, err)
 		}
 		return err
 	}
