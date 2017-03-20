@@ -7,6 +7,7 @@ import (
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
+	"sync"
 )
 
 // OpenTracingServerInterceptor returns a grpc.UnaryServerInterceptor suitable
@@ -86,6 +87,8 @@ func OpenTracingServerInterceptor(tracer opentracing.Tracer, optFuncs ...Option)
 // Root or not, the server Span will be embedded in the context.Context for the
 // application-specific gRPC handler(s) to access.
 func OpenTracingStreamServerInterceptor(tracer opentracing.Tracer, optFuncs ...Option) grpc.StreamServerInterceptor {
+	otgrpcOpts := newOptions()
+	otgrpcOpts.apply(optFuncs...)
 	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 		spanContext, err := extractSpanContext(ss.Context(), tracer)
 		if err != nil && err != opentracing.ErrSpanContextNotFound {
@@ -93,17 +96,39 @@ func OpenTracingStreamServerInterceptor(tracer opentracing.Tracer, optFuncs ...O
 			// don't know where to put such an error and must rely on Tracer
 			// implementations to do something appropriate for the time being.
 		}
+		if otgrpcOpts.inclusionFunc != nil &&
+			!otgrpcOpts.inclusionFunc(spanContext, info.FullMethod, nil, nil) {
+			return handler(srv, ss)
+		}
+
 		serverSpan := tracer.StartSpan(
 			info.FullMethod,
 			ext.RPCServerOption(spanContext),
 			gRPCComponentTag,
 		)
-		defer serverSpan.Finish()
-		ss = &openTracingServerStream{ss, opentracing.ContextWithSpan(ss.Context(), serverSpan)}
+		spanFinished := false
+		lock := new(sync.Mutex)
+		ss = &openTracingServerStream{
+			ServerStream: ss,
+			ctx:          opentracing.ContextWithSpan(ss.Context(), serverSpan),
+			logPayloads:  otgrpcOpts.logPayloads,
+			lock:         lock,
+			serverSpan:   serverSpan,
+			spanFinished: &spanFinished,
+		}
 		err = handler(srv, ss)
+		lock.Lock()
+		defer lock.Unlock()
+		defer func() {
+			spanFinished = true
+			serverSpan.Finish()
+		}()
 		if err != nil {
 			ext.Error.Set(serverSpan, true)
 			serverSpan.LogFields(log.String("event", "gRPC error"), log.Error(err))
+		}
+		if otgrpcOpts.decorator != nil {
+			otgrpcOpts.decorator(serverSpan, info.FullMethod, nil, nil, err)
 		}
 		return err
 	}
@@ -111,11 +136,39 @@ func OpenTracingStreamServerInterceptor(tracer opentracing.Tracer, optFuncs ...O
 
 type openTracingServerStream struct {
 	grpc.ServerStream
-	ctx context.Context
+	ctx          context.Context
+	logPayloads  bool
+	lock         *sync.Mutex
+	serverSpan   opentracing.Span
+	spanFinished *bool
 }
 
 func (ss *openTracingServerStream) Context() context.Context {
 	return ss.ctx
+}
+
+func (ss *openTracingServerStream) SendMsg(m interface{}) error {
+	if ss.logPayloads {
+		ss.logMsg("gRPC response", m)
+	}
+	return ss.ServerStream.SendMsg(m)
+}
+
+func (ss *openTracingServerStream) RecvMsg(m interface{}) error {
+	err := ss.ServerStream.RecvMsg(m)
+	if ss.logPayloads && err == nil {
+		ss.logMsg("gRPC request", m)
+	}
+	return err
+}
+
+func (ss *openTracingServerStream) logMsg(name string, m interface{}) {
+	ss.lock.Lock()
+	defer ss.lock.Unlock()
+	if *ss.spanFinished {
+		return
+	}
+	ss.serverSpan.LogFields(log.Object(name, m))
 }
 
 func extractSpanContext(ctx context.Context, tracer opentracing.Tracer) (opentracing.SpanContext, error) {
