@@ -117,12 +117,12 @@ func OpenTracingStreamServerInterceptor(tracer opentracing.Tracer, optFuncs ...O
 			spanFinished: &spanFinished,
 		}
 		err = handler(srv, ss)
-    lock.Lock()
-    defer lock.Unlock()
-    defer func() {
-      spanFinished = true
-      serverSpan.Finish()
-    }()
+		lock.Lock()
+		defer lock.Unlock()
+		defer func() {
+			spanFinished = true
+			serverSpan.Finish()
+		}()
 		if err != nil {
 			ext.Error.Set(serverSpan, true)
 			serverSpan.LogFields(log.String("event", "gRPC error"), log.Error(err))
