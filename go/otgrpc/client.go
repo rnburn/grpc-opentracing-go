@@ -122,12 +122,11 @@ func OpenTracingStreamClientInterceptor(tracer opentracing.Tracer, optFuncs ...O
 			clientSpan.Finish()
 			return cs, err
 		}
-		return newOpenTracingClientStream(cs, method, desc, tracer, clientSpan, otgrpcOpts), nil
+		return newOpenTracingClientStream(cs, method, desc, clientSpan, otgrpcOpts), nil
 	}
 }
 
-func newOpenTracingClientStream(cs grpc.ClientStream, method string, desc *grpc.StreamDesc, tracer opentracing.Tracer,
-	clientSpan opentracing.Span, otgrpcOpts *options) grpc.ClientStream {
+func newOpenTracingClientStream(cs grpc.ClientStream, method string, desc *grpc.StreamDesc, clientSpan opentracing.Span, otgrpcOpts *options) grpc.ClientStream {
 	finishChan := make(chan struct{})
 
 	// The current OpenTracing specification forbids finishing a span more than
