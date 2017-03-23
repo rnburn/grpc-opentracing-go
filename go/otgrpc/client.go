@@ -8,7 +8,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 	"io"
-	"sync"
+	"runtime"
+	"sync/atomic"
 )
 
 // OpenTracingClientInterceptor returns a grpc.UnaryClientInterceptor suitable
@@ -128,53 +129,72 @@ func OpenTracingStreamClientInterceptor(tracer opentracing.Tracer, optFuncs ...O
 func newOpenTracingClientStream(cs grpc.ClientStream, method string, desc *grpc.StreamDesc, tracer opentracing.Tracer,
 	clientSpan opentracing.Span, otgrpcOpts *options) grpc.ClientStream {
 	finishChan := make(chan struct{})
-	lock := new(sync.Mutex)
+
+	// The current OpenTracing specification forbids finishing a span more than
+	// once. Since we have multiple code paths that could concurrently call
+	// `finishFunc`, we need to add some sort of synchronization to guard against
+	// multiple finishing.
+	isFinished := new(int32)
+	*isFinished = 0
+	finishFunc := func(err error) {
+		if !atomic.CompareAndSwapInt32(isFinished, 0, 1) {
+			return
+		}
+		close(finishChan)
+		defer clientSpan.Finish()
+		if err != nil {
+			clientSpan.LogFields(log.String("event", "gRPC error"), log.Error(err))
+			ext.Error.Set(clientSpan, true)
+		}
+		if otgrpcOpts.decorator != nil {
+			otgrpcOpts.decorator(clientSpan, method, nil, nil, err)
+		}
+	}
 	go func() {
 		select {
 		case <-finishChan:
 			// The client span is being finished by another code path; hence, no
 			// action is necessary.
 		case <-cs.Context().Done():
-			finishStreamSpan(lock, finishChan, clientSpan, method, otgrpcOpts.decorator, cs.Context().Err())
+			finishFunc(cs.Context().Err())
 		}
 	}()
 	otcs := &openTracingClientStream{
 		ClientStream: cs,
-		finishChan:   finishChan,
-		method:       method,
 		desc:         desc,
-		otgrpcOpts:   otgrpcOpts,
-		lock:         lock,
-		clientSpan:   clientSpan,
+		finishFunc:   finishFunc,
 	}
+
+	// The `ClientStream` interface allows one to omit calling `Recv` if it's
+	// known that the result will be `io.EOF`. See
+	// http://stackoverflow.com/q/42915337
+	// In such cases, there's nothing that triggers the span to finish. We,
+	// therefore, set a finalizer so that the span and the context goroutine will
+	// at least be cleaned up when the garbage collector is run.
+	runtime.SetFinalizer(otcs, func(otcs *openTracingClientStream) {
+		otcs.finishFunc(nil)
+	})
 	return otcs
 }
 
 type openTracingClientStream struct {
 	grpc.ClientStream
-	finishChan chan struct{}
-	method     string
 	desc       *grpc.StreamDesc
-	otgrpcOpts *options
-	lock       *sync.Mutex
-	clientSpan opentracing.Span
+	finishFunc func(error)
 }
 
 func (cs *openTracingClientStream) Header() (metadata.MD, error) {
 	md, err := cs.ClientStream.Header()
 	if err != nil {
-		finishStreamSpan(cs.lock, cs.finishChan, cs.clientSpan, cs.method, cs.otgrpcOpts.decorator, err)
+		cs.finishFunc(err)
 	}
 	return md, err
 }
 
 func (cs *openTracingClientStream) SendMsg(m interface{}) error {
-	if cs.otgrpcOpts.logPayloads {
-		cs.logMsg("gRPC request", m)
-	}
 	err := cs.ClientStream.SendMsg(m)
 	if err != nil {
-		finishStreamSpan(cs.lock, cs.finishChan, cs.clientSpan, cs.method, cs.otgrpcOpts.decorator, err)
+		cs.finishFunc(err)
 	}
 	return err
 }
@@ -182,17 +202,14 @@ func (cs *openTracingClientStream) SendMsg(m interface{}) error {
 func (cs *openTracingClientStream) RecvMsg(m interface{}) error {
 	err := cs.ClientStream.RecvMsg(m)
 	if err == io.EOF {
-		finishStreamSpan(cs.lock, cs.finishChan, cs.clientSpan, cs.method, cs.otgrpcOpts.decorator, nil)
+		cs.finishFunc(nil)
 		return err
 	} else if err != nil {
-		finishStreamSpan(cs.lock, cs.finishChan, cs.clientSpan, cs.method, cs.otgrpcOpts.decorator, err)
+		cs.finishFunc(err)
 		return err
 	}
-	if cs.otgrpcOpts.logPayloads {
-		cs.logMsg("gRPC response", m)
-	}
 	if !cs.desc.ServerStreams {
-		finishStreamSpan(cs.lock, cs.finishChan, cs.clientSpan, cs.method, cs.otgrpcOpts.decorator, nil)
+		cs.finishFunc(nil)
 	}
 	return err
 }
@@ -200,21 +217,9 @@ func (cs *openTracingClientStream) RecvMsg(m interface{}) error {
 func (cs *openTracingClientStream) CloseSend() error {
 	err := cs.ClientStream.CloseSend()
 	if err != nil {
-		finishStreamSpan(cs.lock, cs.finishChan, cs.clientSpan, cs.method, cs.otgrpcOpts.decorator, err)
+		cs.finishFunc(err)
 	}
 	return err
-}
-
-func (cs *openTracingClientStream) logMsg(name string, m interface{}) {
-	cs.lock.Lock()
-	defer cs.lock.Unlock()
-	select {
-	case <-cs.finishChan:
-		// The client span is closed or being closed, so we can't log anything.
-		return
-	default:
-	}
-	cs.clientSpan.LogFields(log.Object(name, m))
 }
 
 func injectSpanContext(ctx context.Context, tracer opentracing.Tracer, clientSpan opentracing.Span) context.Context {
@@ -231,26 +236,4 @@ func injectSpanContext(ctx context.Context, tracer opentracing.Tracer, clientSpa
 		clientSpan.LogFields(log.String("event", "Tracer.Inject() failed"), log.Error(err))
 	}
 	return metadata.NewContext(ctx, md)
-}
-
-func finishStreamSpan(lock *sync.Mutex, finishChan chan struct{}, clientSpan opentracing.Span,
-	method string, decorator SpanDecoratorFunc, err error) {
-	lock.Lock()
-	defer lock.Unlock()
-	select {
-	case <-finishChan:
-		// The client span is either already finished or being finished, so we have
-		// nothing to do.
-		return
-	default:
-	}
-	close(finishChan)
-	if err != nil {
-		clientSpan.LogFields(log.String("event", "gRPC error"), log.Error(err))
-		ext.Error.Set(clientSpan, true)
-	}
-	if decorator != nil {
-		decorator(clientSpan, method, nil, nil, err)
-	}
-	clientSpan.Finish()
 }
