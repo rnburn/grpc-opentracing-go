@@ -53,12 +53,8 @@ func main() {
 	defer conn.Close()
 	c := pb.NewCommandLineClient(conn)
 
-	// ctx, cancel := context.WithCancel(context.Background())
-	// cancel()
-	// resp, err := c.Echo(ctx, &pb.CommandRequest{"hello, hello"})
 	resp, err := c.Echo(context.Background(), &pb.CommandRequest{"hello, hello"})
 	if err != nil {
-		// log.Fatalf("Echo failure: %v", err)
 		fmt.Printf("Error: %v\n", err)
 	} else {
 		fmt.Println(resp.Text)
