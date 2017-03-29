@@ -63,7 +63,7 @@ func OpenTracingClientInterceptor(tracer opentracing.Tracer, optFuncs ...Option)
 				clientSpan.LogFields(log.Object("gRPC response", resp))
 			}
 		} else {
-			clientSpan.LogFields(log.String("event", "gRPC error"), log.Error(err))
+			clientSpan.LogFields(log.String("event", "error"), log.String("message", err.Error()))
 			ext.Error.Set(clientSpan, true)
 		}
 		if otgrpcOpts.decorator != nil {
@@ -117,7 +117,7 @@ func OpenTracingStreamClientInterceptor(tracer opentracing.Tracer, optFuncs ...O
 		ctx = injectSpanContext(ctx, tracer, clientSpan)
 		cs, err := streamer(ctx, desc, cc, method, opts...)
 		if err != nil {
-			clientSpan.LogFields(log.String("event", "gRPC error"), log.Error(err))
+			clientSpan.LogFields(log.String("event", "error"), log.String("message", err.Error()))
 			ext.Error.Set(clientSpan, true)
 			clientSpan.Finish()
 			return cs, err
@@ -142,7 +142,7 @@ func newOpenTracingClientStream(cs grpc.ClientStream, method string, desc *grpc.
 		close(finishChan)
 		defer clientSpan.Finish()
 		if err != nil {
-			clientSpan.LogFields(log.String("event", "gRPC error"), log.Error(err))
+			clientSpan.LogFields(log.String("event", "error"), log.String("message", err.Error()))
 			ext.Error.Set(clientSpan, true)
 		}
 		if otgrpcOpts.decorator != nil {

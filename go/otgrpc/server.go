@@ -61,7 +61,7 @@ func OpenTracingServerInterceptor(tracer opentracing.Tracer, optFuncs ...Option)
 			}
 		} else {
 			ext.Error.Set(serverSpan, true)
-			serverSpan.LogFields(log.String("event", "gRPC error"), log.Error(err))
+			serverSpan.LogFields(log.String("event", "error"), log.String("message", err.Error()))
 		}
 		if otgrpcOpts.decorator != nil {
 			otgrpcOpts.decorator(serverSpan, info.FullMethod, req, resp, err)
@@ -113,7 +113,7 @@ func OpenTracingStreamServerInterceptor(tracer opentracing.Tracer, optFuncs ...O
 		err = handler(srv, ss)
 		if err != nil {
 			ext.Error.Set(serverSpan, true)
-			serverSpan.LogFields(log.String("event", "gRPC error"), log.Error(err))
+			serverSpan.LogFields(log.String("event", "error"), log.String("message", err.Error()))
 		}
 		if otgrpcOpts.decorator != nil {
 			otgrpcOpts.decorator(serverSpan, info.FullMethod, nil, nil, err)
