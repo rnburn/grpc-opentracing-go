@@ -129,13 +129,13 @@ func OpenTracingStreamClientInterceptor(tracer opentracing.Tracer, optFuncs ...O
 func newOpenTracingClientStream(cs grpc.ClientStream, method string, desc *grpc.StreamDesc, clientSpan opentracing.Span, otgrpcOpts *options) grpc.ClientStream {
 	finishChan := make(chan struct{})
 
-	// The current OpenTracing specification forbids finishing a span more than
-	// once. Since we have multiple code paths that could concurrently call
-	// `finishFunc`, we need to add some sort of synchronization to guard against
-	// multiple finishing.
 	isFinished := new(int32)
 	*isFinished = 0
 	finishFunc := func(err error) {
+		// The current OpenTracing specification forbids finishing a span more than
+		// once. Since we have multiple code paths that could concurrently call
+		// `finishFunc`, we need to add some sort of synchronization to guard against
+		// multiple finishing.
 		if !atomic.CompareAndSwapInt32(isFinished, 0, 1) {
 			return
 		}
